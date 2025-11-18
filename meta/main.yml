@@ -1,0 +1,24 @@
+galaxy_info:
+  author: Andy Marthin
+  description: Installs rv (Rust Version Manager) and manages Ruby versions on Linux and macOS.
+  company: ""
+  license: MIT
+  min_ansible_version: "2.9"
+
+  platforms:
+    - name: Ubuntu
+      versions:
+        - jammy
+        - noble
+    - name: macOS
+      versions:
+        - all
+
+  galaxy_tags:
+    - ruby
+    - rv
+    - version-manager
+    - rust
+    - development
+
+dependencies: []

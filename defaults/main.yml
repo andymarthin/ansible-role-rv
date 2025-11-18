@@ -1,0 +1,8 @@
+---
+rv_user: "{{ ansible_user_id }}"
+rv_ruby_version: "3.4.2"
+rv_version: "v0.2.0"
+rv_installer_url: "https://github.com/spinel-coop/rv/releases/download/{{ rv_version }}/rv-installer.sh"
+
+rv_system_packages:
+  - curl
