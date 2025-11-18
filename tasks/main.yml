@@ -1,19 +1,20 @@
 ---
 - name: Verify Architecture
+  when: ansible_architecture not in ['x86_64', 'amd64', 'aarch64', 'arm64']
   fail:
     msg: "Architecture {{ ansible_architecture }} is not supported."
-  when: ansible_architecture not in ['x86_64', 'amd64', 'aarch64', 'arm64']
 
 - name: Verify Ruby Version Compliance
-  fail:
-    msg: "Ruby {{ rv_ruby_version }} is not supported."
   when:
     - rv_ruby_version is version('3.2', '<') or (rv_ruby_version is version('3.4.0', '=='))
+  fail:
+    msg: "Ruby {{ rv_ruby_version }} is not supported."
 
 - name: Check Glibc Version (Linux)
+  when: ansible_system == 'Linux'
   block:
     - name: Get glibc version
-      shell: ldd --version | head -n1 | grep -oE '[0-9]+\.[0-9]+' | head -n1
+      ansible.builtin.shell: ldd --version | head -n1 | grep -oE '[0-9]+\.[0-9]+' | head -n1
       register: glibc_check
       changed_when: false
 
@@ -21,32 +22,38 @@
       fail:
         msg: "Glibc version {{ glibc_check.stdout }} is too old."
       when: glibc_check.stdout is version('2.35', '<')
-  when: ansible_system == 'Linux'
 
 - name: Check macOS Version
-  fail:
-    msg: "macOS version {{ ansible_distribution_version }} is too old."
   when:
     - ansible_system == 'Darwin'
     - ansible_distribution_major_version | int < 14
+  fail:
+    msg: "macOS version {{ ansible_distribution_version }} is too old."
 
 - name: Install build dependencies
+  when: ansible_system == 'Linux'
   become: true
   apt:
     name: "{{ rv_system_packages }}"
     state: present
     update_cache: true
-  when: ansible_system == 'Linux'
 
 - name: Get user shell info
   getent:
     database: passwd
     key: "{{ rv_user }}"
+  failed_when: false
+  changed_when: false
 
-- name: Set shell facts
+- name: Build user info with fallbacks
   set_fact:
-    rv_detected_shell_path: "{{ getent_passwd[rv_user][5] }}"
-    rv_shell_name: "{{ getent_passwd[rv_user][5] | basename }}"
+    rv_user_entry: "{{ (getent_passwd | default({})).get(rv_user, [None, None, None, None, None, ansible_env.HOME, ansible_env.SHELL]) }}"
+
+- name: Set user facts
+  set_fact:
+    rv_home_dir: "{{ rv_user_entry[5] }}"
+    rv_detected_shell_path: "{{ rv_user_entry[6] }}"
+    rv_shell_name: "{{ rv_user_entry[6] | basename }}"
 
 - name: Determine config file path
   set_fact:
@@ -59,16 +66,16 @@
 - name: Install rv via installer script
   become: true
   become_user: "{{ rv_user }}"
-  shell: |
+  ansible.builtin.shell: |
     curl --proto '=https' --tlsv1.2 -LsSf {{ rv_installer_url }} | sh
   args:
-    creates: "/home/{{ rv_user }}/.cargo/bin/rv"
+    creates: "{{ rv_home_dir }}/.cargo/bin/rv"
 
 - name: Remove legacy rv PATH from config file
   become: true
   become_user: "{{ rv_user }}"
   lineinfile:
-    path: "/home/{{ rv_user }}/{{ rv_rc_file }}"
+    path: "{{ rv_home_dir }}/{{ rv_rc_file }}"
     line: 'export PATH="$HOME/.rv/bin:$PATH"'
     state: absent
   failed_when: false
@@ -77,16 +84,17 @@
   become: true
   become_user: "{{ rv_user }}"
   lineinfile:
-    path: "/home/{{ rv_user }}/{{ rv_rc_file }}"
+    path: "{{ rv_home_dir }}/{{ rv_rc_file }}"
     line: '. "$HOME/.cargo/env"'
     state: absent
   failed_when: false
 
 - name: Configure config file (Bash/Zsh)
+  when: rv_shell_name in ['bash', 'zsh']
   become: true
   become_user: "{{ rv_user }}"
   blockinfile:
-    path: "/home/{{ rv_user }}/{{ rv_rc_file }}"
+    path: "{{ rv_home_dir }}/{{ rv_rc_file }}"
     create: true
     marker: "# {mark} ANSIBLE MANAGED BLOCK: rv configuration"
     block: |
@@ -96,13 +104,13 @@
 
       eval "$(rv shell init {{ rv_shell_name }})"
       eval "$(rv shell completions {{ rv_shell_name }})"
-  when: rv_shell_name in ['bash', 'zsh']
 
 - name: Configure config file (Fish)
+  when: rv_shell_name == 'fish'
   become: true
   become_user: "{{ rv_user }}"
   blockinfile:
-    path: "/home/{{ rv_user }}/{{ rv_rc_file }}"
+    path: "{{ rv_home_dir }}/{{ rv_rc_file }}"
     create: true
     marker: "# {mark} ANSIBLE MANAGED BLOCK: rv configuration"
     block: |
@@ -112,45 +120,44 @@
 
       rv shell init fish | source
       rv shell completions fish | source
-  when: rv_shell_name == 'fish'
 
 - name: Configure Nushell (vendor/autoload)
+  when: rv_shell_name == 'nu'
   become: true
   become_user: "{{ rv_user }}"
-  shell: |
+  ansible.builtin.shell: |
     nu -c '
       mkdir ($nu.data-dir | path join "vendor/autoload");
       rv shell init nu | save -f ($nu.data-dir | path join "vendor/autoload/rv.nu");
       rv shell completions nu | save --append ($nu.data-dir | path join "vendor/autoload/rv.nu")
     '
-  when: rv_shell_name == 'nu'
   environment:
-    PATH: "/home/{{ rv_user }}/.cargo/bin:{{ ansible_env.PATH }}"
+    PATH: "{{ rv_home_dir }}/.cargo/bin:{{ ansible_env.PATH }}"
 
 - name: Manage Ruby Version
   become: true
   become_user: "{{ rv_user }}"
   environment:
-    PATH: "/home/{{ rv_user }}/.cargo/bin:{{ ansible_env.PATH }}"
+    PATH: "{{ rv_home_dir }}/.cargo/bin:{{ ansible_env.PATH }}"
   block:
     - name: Check if Ruby is installed
-      shell: rv ruby list | grep -q -F "{{ rv_ruby_version }}"
+      ansible.builtin.shell: rv ruby list | grep -q -F "{{ rv_ruby_version }}"
       register: ruby_is_installed
       failed_when: false
       changed_when: false
 
     - name: Install Ruby
-      shell: rv ruby install {{ rv_ruby_version }}
+      ansible.builtin.shell: rv ruby install {{ rv_ruby_version }}
       when: ruby_is_installed.rc != 0
       async: 1800
       poll: 10
 
     - name: Check if Ruby is pinned
-      shell: rv ruby list | grep -q "^\* .*{{ rv_ruby_version }}"
+      ansible.builtin.shell: rv ruby list | grep -q "^\* .*{{ rv_ruby_version }}"
       register: ruby_is_pinned
       failed_when: false
       changed_when: false
 
     - name: Pin Ruby globally
-      shell: rv ruby pin {{ rv_ruby_version }}
+      ansible.builtin.shell: rv ruby pin {{ rv_ruby_version }}
       when: ruby_is_pinned.rc != 0

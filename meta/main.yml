@@ -4,7 +4,6 @@ galaxy_info:
   company: ""
   license: MIT
   min_ansible_version: "2.9"
-
   platforms:
     - name: Ubuntu
       versions:
@@ -13,12 +12,10 @@ galaxy_info:
     - name: macOS
       versions:
         - all
-
   galaxy_tags:
     - ruby
     - rv
-    - version-manager
+    - versionmanager
     - rust
     - development
-
 dependencies: []
