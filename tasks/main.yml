@@ -64,8 +64,8 @@
     rv_user_entry: >-
       {%- if ansible_system == 'Darwin' and rv_dscl_user.rc | default(1) == 0 -%}
       {{ [None, None, None, None,
-          (rv_dscl_user.stdout | regex_search('NFSHomeDirectory:\\s*(\\S+)', '\\1') | first),
-          (rv_dscl_user.stdout | regex_search('UserShell:\\s*(\\S+)', '\\1') | first)] }}
+          (rv_dscl_user.stdout.splitlines() | select('match', '^NFSHomeDirectory:') | first | regex_replace('^NFSHomeDirectory: *', '')) | trim,
+          (rv_dscl_user.stdout.splitlines() | select('match', '^UserShell:') | first | regex_replace('^UserShell: *', '')) | trim] }}
       {%- else -%}
       {{ (ansible_facts.getent_passwd | default({})).get(rv_user,
          [None, None, None, None, ansible_env.HOME, ansible_env.SHELL]) }}
