@@ -11,8 +11,10 @@ manager, and provision a pinned Ruby version on Linux (Ubuntu) and macOS.
 - `curl` available on the target (installed automatically on Ubuntu)
 
 These mirror rv's own [requirements](https://github.com/spinel-coop/rv#requirements).
-The role validates each one in a pre-flight check and fails before making any
-changes.
+The role checks the OS family, macOS version, glibc version, and architecture in
+a pre-flight pass, and fails before making any changes. Ubuntu 22.04+ is the
+supported Linux target; the distribution itself is not asserted, though the
+apt-based tasks fail on non-Debian hosts.
 
 ## Role Variables
 
