@@ -10,6 +10,10 @@ manager, and provision a pinned Ruby version on Linux (Ubuntu) and macOS.
 - **Architectures:** x86_64 / arm64
 - `curl` available on the target (installed automatically on Ubuntu)
 
+These mirror rv's own [requirements](https://github.com/spinel-coop/rv#requirements).
+The role validates each one in a pre-flight check and fails before making any
+changes.
+
 ## Role Variables
 
 | Variable | Default | Purpose |
