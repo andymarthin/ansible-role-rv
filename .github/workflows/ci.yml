@@ -9,6 +9,14 @@ on:
 permissions:
   contents: read
 
+# Cancel superseded runs when a branch is pushed again. PRs are grouped by head
+# ref so a new push supersedes the previous run on the same PR. Runs on `main`
+# are never cancelled: releases are tagged from `main`, so every commit there
+# needs a completed run.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   lint:
     name: Lint
