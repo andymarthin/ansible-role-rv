@@ -1,7 +1,9 @@
 ---
 dependency:
   name: galaxy
-  enabled: false
+  enabled: true
+  options:
+    requirements-file: requirements.yml
 
 driver:
   name: docker

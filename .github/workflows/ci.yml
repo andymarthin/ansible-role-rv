@@ -48,6 +48,9 @@ jobs:
           python -m pip install --upgrade pip
           pip install ansible-core ansible-lint molecule "molecule-plugins[docker]"
 
+      - name: Install Ansible collections
+        run: ansible-galaxy collection install -r requirements.yml
+
       - name: Run Molecule
         run: molecule test
         env:
