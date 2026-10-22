@@ -1,8 +1,17 @@
 ---
 rv_user: "{{ ansible_user_id }}"
-rv_ruby_version: "3.4.2"
-rv_version: "v0.2.0"
+rv_ruby_version: "3.4.11"
+rv_version: "v0.7.2"
 rv_installer_url: "https://github.com/spinel-coop/rv/releases/download/{{ rv_version }}/rv-installer.sh"
+# Scratch path for the downloaded installer, removed once rv is installed.
+rv_installer_path: "{{ rv_home_dir | default(ansible_env.HOME) }}/.cache/rv-installer.sh"
+
+# Ruby series supported by rv. Anything else is rejected before we touch the host.
+rv_supported_ruby_series:
+  - "3.2"
+  - "3.3"
+  - "3.4"
+  - "4.0"
 
 rv_system_packages:
   - curl
