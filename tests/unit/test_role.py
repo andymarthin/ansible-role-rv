@@ -13,7 +13,22 @@ import unittest
 
 from ansible.parsing.dataloader import DataLoader
 from ansible.plugins.loader import init_plugin_loader
-from ansible.template import Templar
+from ansible.template import Templar, trust_as_template
+
+
+def _trust(value):
+    """Tag role strings as trusted templates (ansible-core >= 2.19).
+
+    Since 2.19, ``Templar.template`` returns a plain string verbatim instead of
+    rendering it, so expressions loaded from the role must be tagged first.
+    """
+    if isinstance(value, str):
+        return trust_as_template(value)
+    if isinstance(value, list):
+        return [_trust(v) for v in value]
+    if isinstance(value, dict):
+        return {k: _trust(v) for k, v in value.items()}
+    return value
 
 ROOT = Path(__file__).resolve().parents[2]
 init_plugin_loader()
@@ -50,7 +65,7 @@ class RoleTest(unittest.TestCase):
     def render(self, value, **variables):
         return Templar(
             loader=LOADER, variables={**self.variables, **variables}
-        ).template(value)
+        ).template(_trust(value))
 
     def facts(self, name, **variables):
         return self.render(TASKS[name]["ansible.builtin.set_fact"], **variables)

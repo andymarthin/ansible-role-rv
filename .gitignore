@@ -7,3 +7,5 @@
 venv/
 .cache/
 .ansible
+__pycache__/
+*.pyc
