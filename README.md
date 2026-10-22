@@ -30,7 +30,7 @@ apt-based tasks fail on non-Debian hosts.
 
 ## What the role does
 
-- Validates architecture, Ruby series, OS version, and glibc (Ubuntu).
+- Validates architecture, Ruby series, OS version, and (on Linux) glibc.
 - Installs rv into `~/.local/bin` for the target user, with `RV_NO_MODIFY_PATH=1`
   so the installer does not edit shell rc files behind the role's back.
 - Configures shell RC files (bash, zsh, fish, nu) with a PATH guard, `rv shell
