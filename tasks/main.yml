@@ -20,12 +20,19 @@
       changed_when: false
       failed_when: false
 
+    - name: Fail if glibc version could not be determined
+      ansible.builtin.fail:
+        msg: >-
+          Could not determine the glibc version: `getconf GNU_LIBC_VERSION`
+          exited with status {{ glibc_check.rc }}
+          {{- ' (' ~ (glibc_check.stderr | trim) ~ ')' if glibc_check.stderr | default('') | trim else '' }}.
+          rv requires glibc >= 2.35.
+      when: glibc_check.rc != 0
+
     - name: Verify Glibc >= 2.35
       ansible.builtin.fail:
         msg: "Glibc version {{ glibc_check.stdout | default('unknown') }} is too old."
-      when:
-        - glibc_check.rc == 0
-        - glibc_check.stdout.split()[-1] is version('2.35', '<')
+      when: glibc_check.stdout.split()[-1] is version('2.35', '<')
 
 - name: Check macOS Version
   ansible.builtin.fail:
@@ -87,13 +94,29 @@
       {% elif rv_shell_name == 'nu' %}config.nu
       {% else %}.bashrc{% endif %}
 
+# Used to preserve the mode of an existing rc file instead of forcing 0644.
+- name: Stat existing config file
+  ansible.builtin.stat:
+    path: "{{ rv_home_dir }}/{{ rv_rc_file }}"
+  register: rv_rc_file_stat
+  become: true
+  become_user: "{{ rv_user }}"
+
+- name: Set config file mode
+  ansible.builtin.set_fact:
+    # Preserve the user's existing permissions; 0600 for a newly created file.
+    rv_rc_file_mode: "{{ rv_rc_file_stat.stat.mode | default('0600') }}"
+
 - name: Check for an existing rv installation
   ansible.builtin.stat:
     path: "{{ rv_bin_dir }}/rv"
   register: rv_binary
 
 - name: Read installed rv version
-  ansible.builtin.command: "{{ rv_bin_dir }}/rv --version"
+  ansible.builtin.command:
+    argv:
+      - "{{ rv_bin_dir }}/rv"
+      - --version
   register: rv_installed_version
   changed_when: false
   failed_when: false
@@ -128,7 +151,9 @@
 
 - name: Install rv via installer script
   ansible.builtin.command:
-    cmd: sh {{ rv_installer_path }}
+    argv:
+      - sh
+      - "{{ rv_installer_path }}"
   become: true
   become_user: "{{ rv_user }}"
   environment:
@@ -154,7 +179,7 @@
     path: "{{ rv_home_dir }}/{{ rv_rc_file }}"
     line: 'export PATH="$HOME/.rv/bin:$PATH"'
     state: absent
-    mode: "0644"
+    mode: "{{ rv_rc_file_mode }}"
   become: true
   become_user: "{{ rv_user }}"
   failed_when: false
@@ -164,7 +189,7 @@
     path: "{{ rv_home_dir }}/{{ rv_rc_file }}"
     line: '. "$HOME/.cargo/env"'
     state: absent
-    mode: "0644"
+    mode: "{{ rv_rc_file_mode }}"
   become: true
   become_user: "{{ rv_user }}"
   failed_when: false
@@ -174,7 +199,7 @@
     path: "{{ rv_home_dir }}/{{ rv_rc_file }}"
     line: 'export PATH="$HOME/.cargo/bin:$PATH"'
     state: absent
-    mode: "0644"
+    mode: "{{ rv_rc_file_mode }}"
   become: true
   become_user: "{{ rv_user }}"
   failed_when: false
@@ -183,7 +208,7 @@
   ansible.builtin.blockinfile:
     path: "{{ rv_home_dir }}/{{ rv_rc_file }}"
     create: true
-    mode: "0644"
+    mode: "{{ rv_rc_file_mode }}"
     marker: "# {mark} ANSIBLE MANAGED BLOCK: rv configuration"
     block: |
       case ":$PATH:" in
@@ -201,7 +226,7 @@
   ansible.builtin.blockinfile:
     path: "{{ rv_home_dir }}/{{ rv_rc_file }}"
     create: true
-    mode: "0644"
+    mode: "{{ rv_rc_file_mode }}"
     marker: "# {mark} ANSIBLE MANAGED BLOCK: rv configuration"
     block: |
       if not contains "$HOME/.local/bin" $PATH
@@ -273,7 +298,10 @@
       poll: 10
 
     - name: Read current global Ruby pin
-      ansible.builtin.command: cat {{ rv_home_dir }}/.ruby-version
+      ansible.builtin.command:
+        argv:
+          - cat
+          - "{{ rv_home_dir }}/.ruby-version"
       register: rv_global_pin
       changed_when: false
       failed_when: false
