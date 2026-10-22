@@ -293,6 +293,21 @@ class RoleTest(unittest.TestCase):
                     mode,
                 )
 
+    def test_home_directory_probes_run_as_rv_user(self):
+        # A home directory is often mode 0700, so probing it as the connection
+        # user fails with "Permission denied" when rv_user is someone else.
+        for name in [
+            "Stat existing config file",
+            "Check for an existing rv installation",
+            "Read installed rv version",
+        ]:
+            with self.subTest(task=name):
+                task = TASKS[name]
+                self.assertTrue(task.get("become"), f"{name} should become")
+                self.assertEqual(
+                    task.get("become_user"), "{{ rv_user }}", f"{name} become_user"
+                )
+
     def test_ruby_install_requires_exact_version_managed_by_rv(self):
         managed = {"Installed": {"managed": True, "version": "ruby-3.4.11"}}
         unmanaged = {"Installed": {"managed": False, "version": "ruby-3.4.11"}}

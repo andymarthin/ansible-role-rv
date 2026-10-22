@@ -111,6 +111,8 @@
   ansible.builtin.stat:
     path: "{{ rv_bin_dir }}/rv"
   register: rv_binary
+  become: true
+  become_user: "{{ rv_user }}"
 
 - name: Read installed rv version
   ansible.builtin.command:
