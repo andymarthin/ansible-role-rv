@@ -59,9 +59,10 @@ asserts the install path, the managed rc block, the global pin, and that the
 Ruby is actually managed by rv.
 
 ```bash
-pip install molecule molecule-plugins[docker] ansible-lint
+pip install molecule "molecule-plugins[docker]" ansible-lint
 molecule test
 ansible-lint
+python -m unittest discover -s tests/unit -v
 ```
 
 A minimal sanity check against localhost:
