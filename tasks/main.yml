@@ -48,12 +48,28 @@
     key: "{{ rv_user }}"
   failed_when: false
   changed_when: false
+  when: ansible_system != 'Darwin'
+
+- name: Get user shell info (macOS)
+  ansible.builtin.command: dscl . -read /Users/{{ rv_user }} NFSHomeDirectory UserShell
+  register: rv_dscl_user
+  failed_when: false
+  changed_when: false
+  when: ansible_system == 'Darwin'
 
 - name: Build user info with fallbacks
   ansible.builtin.set_fact:
     # `getent` strips the username, so the fields are:
     # [0]=password [1]=uid [2]=gid [3]=gecos [4]=home [5]=shell
-    rv_user_entry: "{{ (ansible_facts.getent_passwd | default({})).get(rv_user, [None, None, None, None, ansible_env.HOME, ansible_env.SHELL]) }}"
+    rv_user_entry: >-
+      {%- if ansible_system == 'Darwin' and rv_dscl_user.rc | default(1) == 0 -%}
+      {{ [None, None, None, None,
+          (rv_dscl_user.stdout | regex_search('NFSHomeDirectory:\\s*(\\S+)', '\\1') | first),
+          (rv_dscl_user.stdout | regex_search('UserShell:\\s*(\\S+)', '\\1') | first)] }}
+      {%- else -%}
+      {{ (ansible_facts.getent_passwd | default({})).get(rv_user,
+         [None, None, None, None, ansible_env.HOME, ansible_env.SHELL]) }}
+      {%- endif -%}
 
 - name: Set user facts
   ansible.builtin.set_fact:
@@ -113,19 +129,24 @@
 - name: Install rv via installer script
   ansible.builtin.command:
     cmd: sh {{ rv_installer_path }}
-    creates: "{{ rv_bin_dir }}/rv"
   become: true
   become_user: "{{ rv_user }}"
   environment:
     # The role manages shell integration itself, so stop the installer from
     # editing .profile/.bashrc/.zshrc/fish conf.d behind our back.
     RV_NO_MODIFY_PATH: "1"
+  # No `creates` guard: rv_needs_install already covers both the first install
+  # and the version-mismatch upgrade. A `creates` guard would short-circuit the
+  # upgrade, because the old binary still exists at this path.
   when: rv_needs_install | bool
+  changed_when: true
 
 - name: Remove downloaded rv installer
   ansible.builtin.file:
     path: "{{ rv_installer_path }}"
     state: absent
+  become: true
+  become_user: "{{ rv_user }}"
   when: rv_needs_install | bool
 
 - name: Remove legacy rv PATH from config file

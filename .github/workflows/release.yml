@@ -14,7 +14,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Check out repository
-        uses: actions/checkout@v4
+        # v4.4.0
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           fetch-depth: 0
 
@@ -30,7 +31,12 @@ jobs:
             exit 1
           fi
 
-          if ! grep -qE "^## \[${tag}\]" CHANGELOG.md; then
+          # Match the version as literal text so a near-miss heading such as
+          # '## [0x2y0]' cannot satisfy the check for tag 0.2.0.
+          if ! awk -v tag="$tag" '
+            index($0, "## [" tag "]") == 1 { found = 1 }
+            END { exit(found ? 0 : 1) }
+          ' CHANGELOG.md; then
             echo "::error::CHANGELOG.md has no '## [${tag}]' section for tag ${GITHUB_REF_NAME}."
             exit 1
           fi
@@ -39,7 +45,7 @@ jobs:
           # up to the next '## [' heading or the trailing link-reference block,
           # with leading/trailing blank lines removed.
           awk -v tag="$tag" '
-            $0 ~ "^## \\[" tag "\\]" { found = 1; next }
+            index($0, "## [" tag "]") == 1 { found = 1; next }
             found && (/^## \[/ || /^\[[^]]+\]:[[:space:]]/) { exit }
             found { print }
           ' CHANGELOG.md | sed -e '/./,$!d' | sed -e ':a' -e '/^\n*$/{$d;N;ba' -e '}' > release-notes.md
