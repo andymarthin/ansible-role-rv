@@ -120,6 +120,8 @@
   register: rv_installed_version
   changed_when: false
   failed_when: false
+  become: true
+  become_user: "{{ rv_user }}"
   when: rv_binary.stat.exists
 
 - name: Decide whether rv needs installing
