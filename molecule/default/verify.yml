@@ -60,6 +60,37 @@
           - "'# rv' not in (rv_bashrc.content | b64decode).split('ANSIBLE MANAGED BLOCK')[0]"
         fail_msg: "The installer modified .bashrc outside the managed block"
 
+    - name: Assert shell integration has one complete managed block
+      ansible.builtin.assert:
+        that:
+          - >-
+            (rv_bashrc.content | b64decode)
+            | regex_findall('(?m)^# BEGIN ANSIBLE MANAGED BLOCK: rv configuration$')
+            | length == 1
+          - >-
+            (rv_bashrc.content | b64decode)
+            | regex_findall('(?m)^# END ANSIBLE MANAGED BLOCK: rv configuration$')
+            | length == 1
+          - "'rv shell completions bash' in (rv_bashrc.content | b64decode)"
+          - >-
+            'export PATH="$HOME/.cargo/bin:$PATH"'
+            not in (rv_bashrc.content | b64decode)
+          - >-
+            'export PATH="$HOME/.rv/bin:$PATH"'
+            not in (rv_bashrc.content | b64decode)
+        fail_msg: "Shell integration is duplicated, incomplete, or uses a legacy PATH"
+
+    - name: Stat the downloaded installer
+      ansible.builtin.stat:
+        path: "{{ rv_verify_home }}/.cache/rv-installer.sh"
+      register: rv_installer_file
+
+    - name: Assert the downloaded installer was cleaned up
+      ansible.builtin.assert:
+        that:
+          - not rv_installer_file.stat.exists
+        fail_msg: "The downloaded rv installer was left behind after installation"
+
     - name: Read the global Ruby pin
       ansible.builtin.slurp:
         src: "{{ rv_verify_home }}/.ruby-version"
