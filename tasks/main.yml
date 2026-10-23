@@ -1,163 +1,320 @@
 ---
 - name: Verify Architecture
-  when: ansible_architecture not in ['x86_64', 'amd64', 'aarch64', 'arm64']
-  fail:
+  ansible.builtin.fail:
     msg: "Architecture {{ ansible_architecture }} is not supported."
+  when: ansible_architecture not in ['x86_64', 'amd64', 'aarch64', 'arm64']
 
 - name: Verify Ruby Version Compliance
-  when:
-    - rv_ruby_version is version('3.2', '<') or (rv_ruby_version is version('3.4.0', '=='))
-  fail:
-    msg: "Ruby {{ rv_ruby_version }} is not supported."
+  ansible.builtin.fail:
+    msg: >-
+      Ruby {{ rv_ruby_version }} is not supported by rv {{ rv_version }}.
+      Supported series: {{ rv_supported_ruby_series | join(', ') }}.
+  when: rv_ruby_version.split('.')[:2] | join('.') not in rv_supported_ruby_series
 
 - name: Check Glibc Version (Linux)
   when: ansible_system == 'Linux'
   block:
     - name: Get glibc version
-      ansible.builtin.shell: ldd --version | head -n1 | grep -oE '[0-9]+\.[0-9]+' | head -n1
+      ansible.builtin.command: getconf GNU_LIBC_VERSION
       register: glibc_check
       changed_when: false
+      failed_when: false
+
+    - name: Fail if glibc version could not be determined
+      ansible.builtin.fail:
+        msg: >-
+          Could not determine the glibc version: `getconf GNU_LIBC_VERSION`
+          exited with status {{ glibc_check.rc }}
+          {{- ' (' ~ (glibc_check.stderr | trim) ~ ')' if glibc_check.stderr | default('') | trim else '' }}.
+          rv requires glibc >= 2.35.
+      when: glibc_check.rc != 0
 
     - name: Verify Glibc >= 2.35
-      fail:
-        msg: "Glibc version {{ glibc_check.stdout }} is too old."
-      when: glibc_check.stdout is version('2.35', '<')
+      ansible.builtin.fail:
+        msg: "Glibc version {{ glibc_check.stdout | default('unknown') }} is too old."
+      when: glibc_check.stdout.split()[-1] is version('2.35', '<')
 
 - name: Check macOS Version
+  ansible.builtin.fail:
+    msg: "macOS version {{ ansible_distribution_version }} is too old."
   when:
     - ansible_system == 'Darwin'
     - ansible_distribution_major_version | int < 14
-  fail:
-    msg: "macOS version {{ ansible_distribution_version }} is too old."
 
 - name: Install build dependencies
-  when: ansible_system == 'Linux'
-  become: true
-  apt:
+  ansible.builtin.apt:
     name: "{{ rv_system_packages }}"
     state: present
     update_cache: true
+  when: ansible_system == 'Linux'
+  become: true
 
 - name: Get user shell info
-  getent:
+  ansible.builtin.getent:
     database: passwd
     key: "{{ rv_user }}"
   failed_when: false
   changed_when: false
+  when: ansible_system != 'Darwin'
+
+- name: Get user shell info (macOS)
+  ansible.builtin.command: dscl . -read /Users/{{ rv_user }} NFSHomeDirectory UserShell
+  register: rv_dscl_user
+  failed_when: false
+  changed_when: false
+  when: ansible_system == 'Darwin'
 
 - name: Build user info with fallbacks
-  set_fact:
-    rv_user_entry: "{{ (getent_passwd | default({})).get(rv_user, [None, None, None, None, None, ansible_env.HOME, ansible_env.SHELL]) }}"
+  ansible.builtin.set_fact:
+    # `getent` strips the username, so the fields are:
+    # [0]=password [1]=uid [2]=gid [3]=gecos [4]=home [5]=shell
+    rv_user_entry: >-
+      {%- if ansible_system == 'Darwin' and rv_dscl_user.rc | default(1) == 0 -%}
+      {{ [None, None, None, None,
+          (rv_dscl_user.stdout.splitlines() | select('match', '^NFSHomeDirectory:') | first | regex_replace('^NFSHomeDirectory: *', '')) | trim,
+          (rv_dscl_user.stdout.splitlines() | select('match', '^UserShell:') | first | regex_replace('^UserShell: *', '')) | trim] }}
+      {%- else -%}
+      {{ (ansible_facts.getent_passwd | default({})).get(rv_user,
+         [None, None, None, None, ansible_env.HOME, ansible_env.SHELL]) }}
+      {%- endif -%}
 
 - name: Set user facts
-  set_fact:
-    rv_home_dir: "{{ rv_user_entry[5] }}"
-    rv_detected_shell_path: "{{ rv_user_entry[6] }}"
-    rv_shell_name: "{{ rv_user_entry[6] | basename }}"
+  ansible.builtin.set_fact:
+    rv_home_dir: "{{ rv_user_entry[4] }}"
+    rv_detected_shell_path: "{{ rv_user_entry[5] }}"
+    rv_shell_name: "{{ rv_user_entry[5] | basename }}"
+    # rv >= 0.7.0 installs into ~/.local/bin; 0.2.0 used ~/.cargo/bin.
+    rv_bin_dir: "{{ rv_user_entry[4] }}/.local/bin"
 
 - name: Determine config file path
-  set_fact:
+  ansible.builtin.set_fact:
     rv_rc_file: >-
       {% if rv_shell_name == 'zsh' %}.zshrc
       {% elif rv_shell_name == 'fish' %}.config/fish/config.fish
       {% elif rv_shell_name == 'nu' %}config.nu
       {% else %}.bashrc{% endif %}
 
-- name: Install rv via installer script
+# Used to preserve the mode of an existing rc file instead of forcing 0644.
+- name: Stat existing config file
+  ansible.builtin.stat:
+    path: "{{ rv_home_dir }}/{{ rv_rc_file }}"
+  register: rv_rc_file_stat
   become: true
   become_user: "{{ rv_user }}"
-  ansible.builtin.shell: |
-    curl --proto '=https' --tlsv1.2 -LsSf {{ rv_installer_url }} | sh
-  args:
-    creates: "{{ rv_home_dir }}/.cargo/bin/rv"
+
+- name: Set config file mode
+  ansible.builtin.set_fact:
+    # Preserve the user's existing permissions; 0600 for a newly created file.
+    rv_rc_file_mode: "{{ rv_rc_file_stat.stat.mode | default('0600') }}"
+
+- name: Check for an existing rv installation
+  ansible.builtin.stat:
+    path: "{{ rv_bin_dir }}/rv"
+  register: rv_binary
+  become: true
+  become_user: "{{ rv_user }}"
+
+- name: Read installed rv version
+  ansible.builtin.command:
+    argv:
+      - "{{ rv_bin_dir }}/rv"
+      - --version
+  register: rv_installed_version
+  changed_when: false
+  failed_when: false
+  become: true
+  become_user: "{{ rv_user }}"
+  when: rv_binary.stat.exists
+
+- name: Decide whether rv needs installing
+  ansible.builtin.set_fact:
+    # Reinstall when the binary is missing or reports a different release than
+    # rv_version, so bumping rv_version actually upgrades an existing install.
+    rv_needs_install: >-
+      {{ not rv_binary.stat.exists
+         or (rv_installed_version.stdout | default('') | trim)
+            != 'rv ' ~ (rv_version | regex_replace('^v', '')) }}
+
+- name: Create rv installer directory
+  ansible.builtin.file:
+    path: "{{ rv_installer_path | dirname }}"
+    state: directory
+    mode: "0755"
+  become: true
+  become_user: "{{ rv_user }}"
+  when: rv_needs_install | bool
+
+- name: Fetch rv installer
+  ansible.builtin.get_url:
+    url: "{{ rv_installer_url }}"
+    dest: "{{ rv_installer_path }}"
+    mode: "0755"
+  become: true
+  become_user: "{{ rv_user }}"
+  when: rv_needs_install | bool
+
+- name: Install rv via installer script
+  ansible.builtin.command:
+    argv:
+      - sh
+      - "{{ rv_installer_path }}"
+  become: true
+  become_user: "{{ rv_user }}"
+  environment:
+    # The role manages shell integration itself, so stop the installer from
+    # editing .profile/.bashrc/.zshrc/fish conf.d behind our back.
+    RV_NO_MODIFY_PATH: "1"
+  # No `creates` guard: rv_needs_install already covers both the first install
+  # and the version-mismatch upgrade. A `creates` guard would short-circuit the
+  # upgrade, because the old binary still exists at this path.
+  when: rv_needs_install | bool
+  changed_when: true
+
+- name: Remove downloaded rv installer
+  ansible.builtin.file:
+    path: "{{ rv_installer_path }}"
+    state: absent
+  become: true
+  become_user: "{{ rv_user }}"
+  when: rv_needs_install | bool
 
 - name: Remove legacy rv PATH from config file
-  become: true
-  become_user: "{{ rv_user }}"
-  lineinfile:
+  ansible.builtin.lineinfile:
     path: "{{ rv_home_dir }}/{{ rv_rc_file }}"
     line: 'export PATH="$HOME/.rv/bin:$PATH"'
     state: absent
+    mode: "{{ rv_rc_file_mode }}"
+  become: true
+  become_user: "{{ rv_user }}"
   failed_when: false
 
 - name: Remove standalone cargo env source
-  become: true
-  become_user: "{{ rv_user }}"
-  lineinfile:
+  ansible.builtin.lineinfile:
     path: "{{ rv_home_dir }}/{{ rv_rc_file }}"
     line: '. "$HOME/.cargo/env"'
     state: absent
+    mode: "{{ rv_rc_file_mode }}"
+  become: true
+  become_user: "{{ rv_user }}"
+  failed_when: false
+
+- name: Remove legacy cargo bin PATH export
+  ansible.builtin.lineinfile:
+    path: "{{ rv_home_dir }}/{{ rv_rc_file }}"
+    line: 'export PATH="$HOME/.cargo/bin:$PATH"'
+    state: absent
+    mode: "{{ rv_rc_file_mode }}"
+  become: true
+  become_user: "{{ rv_user }}"
   failed_when: false
 
 - name: Configure config file (Bash/Zsh)
-  when: rv_shell_name in ['bash', 'zsh']
-  become: true
-  become_user: "{{ rv_user }}"
-  blockinfile:
+  ansible.builtin.blockinfile:
     path: "{{ rv_home_dir }}/{{ rv_rc_file }}"
     create: true
+    mode: "{{ rv_rc_file_mode }}"
     marker: "# {mark} ANSIBLE MANAGED BLOCK: rv configuration"
     block: |
-      if [ -f "$HOME/.cargo/env" ]; then
-          . "$HOME/.cargo/env"
-      fi
+      case ":$PATH:" in
+          *":$HOME/.local/bin:"*) ;;
+          *) export PATH="$HOME/.local/bin:$PATH" ;;
+      esac
 
       eval "$(rv shell init {{ rv_shell_name }})"
       eval "$(rv shell completions {{ rv_shell_name }})"
-
-- name: Configure config file (Fish)
-  when: rv_shell_name == 'fish'
+  when: rv_shell_name in ['bash', 'zsh']
   become: true
   become_user: "{{ rv_user }}"
-  blockinfile:
+
+- name: Configure config file (Fish)
+  ansible.builtin.blockinfile:
     path: "{{ rv_home_dir }}/{{ rv_rc_file }}"
     create: true
+    mode: "{{ rv_rc_file_mode }}"
     marker: "# {mark} ANSIBLE MANAGED BLOCK: rv configuration"
     block: |
-      if test -f "$HOME/.cargo/env"
-          source "$HOME/.cargo/env"
+      if not contains "$HOME/.local/bin" $PATH
+          set -x PATH "$HOME/.local/bin" $PATH
       end
 
       rv shell init fish | source
       rv shell completions fish | source
+  when: rv_shell_name == 'fish'
+  become: true
+  become_user: "{{ rv_user }}"
 
 - name: Configure Nushell (vendor/autoload)
   when: rv_shell_name == 'nu'
   become: true
   become_user: "{{ rv_user }}"
-  ansible.builtin.shell: |
-    nu -c '
-      mkdir ($nu.data-dir | path join "vendor/autoload");
-      rv shell init nu | save -f ($nu.data-dir | path join "vendor/autoload/rv.nu");
-      rv shell completions nu | save --append ($nu.data-dir | path join "vendor/autoload/rv.nu")
-    '
   environment:
-    PATH: "{{ rv_home_dir }}/.cargo/bin:{{ ansible_env.PATH }}"
+    PATH: "{{ rv_bin_dir }}:{{ ansible_env.PATH }}"
+  block:
+    - name: Locate Nushell data directory
+      ansible.builtin.command: nu -c '$nu.data-dir'
+      register: rv_nu_data_dir
+      changed_when: false
+
+    - name: Render Nushell integration
+      ansible.builtin.command: rv shell init nu
+      register: rv_nu_init
+      changed_when: false
+
+    - name: Render Nushell completions
+      ansible.builtin.command: rv shell completions nu
+      register: rv_nu_completions
+      changed_when: false
+
+    - name: Create Nushell autoload directory
+      ansible.builtin.file:
+        path: "{{ rv_nu_data_dir.stdout | trim }}/vendor/autoload"
+        state: directory
+        mode: "0755"
+
+    - name: Install Nushell integration
+      ansible.builtin.copy:
+        content: "{{ rv_nu_init.stdout }}\n{{ rv_nu_completions.stdout }}"
+        dest: "{{ rv_nu_data_dir.stdout | trim }}/vendor/autoload/rv.nu"
+        mode: "0644"
 
 - name: Manage Ruby Version
   become: true
   become_user: "{{ rv_user }}"
   environment:
-    PATH: "{{ rv_home_dir }}/.cargo/bin:{{ ansible_env.PATH }}"
+    PATH: "{{ rv_bin_dir }}:{{ ansible_env.PATH }}"
   block:
-    - name: Check if Ruby is installed
-      ansible.builtin.shell: rv ruby list | grep -q -F "{{ rv_ruby_version }}"
-      register: ruby_is_installed
-      failed_when: false
+    - name: Check installed Ruby versions
+      ansible.builtin.command: rv ruby list --installed-only --format json
+      register: rv_installed_rubies
       changed_when: false
 
     - name: Install Ruby
-      ansible.builtin.shell: rv ruby install {{ rv_ruby_version }}
-      when: ruby_is_installed.rc != 0
+      ansible.builtin.command: rv ruby install {{ rv_ruby_version }}
+      when: >-
+        rv_installed_rubies.stdout | from_json
+        | selectattr('Installed.managed', 'defined')
+        | selectattr('Installed.managed')
+        | map(attribute='Installed.version')
+        | select('eq', 'ruby-' ~ rv_ruby_version)
+        | list | length == 0
+      changed_when: true
       async: 1800
       poll: 10
 
-    - name: Check if Ruby is pinned
-      ansible.builtin.shell: rv ruby list | grep -q "^\* .*{{ rv_ruby_version }}"
-      register: ruby_is_pinned
-      failed_when: false
+    - name: Read current global Ruby pin
+      ansible.builtin.command:
+        argv:
+          - cat
+          - "{{ rv_home_dir }}/.ruby-version"
+      register: rv_global_pin
       changed_when: false
+      failed_when: false
 
     - name: Pin Ruby globally
-      ansible.builtin.shell: rv ruby pin {{ rv_ruby_version }}
-      when: ruby_is_pinned.rc != 0
+      # `rv ruby pin` writes .ruby-version into the current directory, so run it
+      # from the user's home to make the pin global rather than project-scoped.
+      ansible.builtin.command: rv ruby pin {{ rv_ruby_version }}
+      args:
+        chdir: "{{ rv_home_dir }}"
+      when: rv_global_pin.stdout | trim != rv_ruby_version
+      changed_when: true

@@ -1,0 +1,76 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: Create GitHub Release
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        # v4.4.0
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+
+      - name: Verify tag matches changelog
+        id: changelog
+        run: |
+          set -euo pipefail
+
+          tag="${GITHUB_REF_NAME#v}"
+
+          if [ ! -f CHANGELOG.md ]; then
+            echo "::error::CHANGELOG.md not found."
+            exit 1
+          fi
+
+          # Match the version as literal text so a near-miss heading such as
+          # '## [0x2y0]' cannot satisfy the check for tag 0.2.0.
+          if ! awk -v tag="$tag" '
+            index($0, "## [" tag "]") == 1 { found = 1 }
+            END { exit(found ? 0 : 1) }
+          ' CHANGELOG.md; then
+            echo "::error::CHANGELOG.md has no '## [${tag}]' section for tag ${GITHUB_REF_NAME}."
+            exit 1
+          fi
+
+          # Print the body of the matching section: everything after the heading
+          # up to the next '## [' heading or the trailing link-reference block,
+          # with leading/trailing blank lines removed.
+          awk -v tag="$tag" '
+            index($0, "## [" tag "]") == 1 { found = 1; next }
+            found && (/^## \[/ || /^\[[^]]+\]:[[:space:]]/) { exit }
+            found { print }
+          ' CHANGELOG.md | sed -e '/./,$!d' | sed -e ':a' -e '/^\n*$/{$d;N;ba' -e '}' > release-notes.md
+
+          if [ ! -s release-notes.md ]; then
+            echo "::error::The changelog section for ${tag} is empty."
+            exit 1
+          fi
+
+          echo "--- release notes ---"
+          cat release-notes.md
+
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+
+          if gh release view "${GITHUB_REF_NAME}" >/dev/null 2>&1; then
+            echo "::error::Release ${GITHUB_REF_NAME} already exists."
+            exit 1
+          fi
+
+          gh release create "${GITHUB_REF_NAME}" \
+            --title "${GITHUB_REF_NAME}" \
+            --notes-file release-notes.md \
+            --verify-tag

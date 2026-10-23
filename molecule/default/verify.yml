@@ -1,0 +1,120 @@
+---
+- name: Verify
+  hosts: all
+  gather_facts: true
+  vars:
+    rv_verify_user: "{{ ansible_user_id }}"
+    rv_verify_home: "{{ ansible_env.HOME }}"
+  tasks:
+    - name: Stat the rv binary
+      ansible.builtin.stat:
+        path: "{{ rv_verify_home }}/.local/bin/rv"
+      register: rv_bin
+
+    - name: Assert rv is installed to ~/.local/bin
+      ansible.builtin.assert:
+        that:
+          - rv_bin.stat.exists
+          - rv_bin.stat.executable
+        fail_msg: "rv was not installed to ~/.local/bin"
+
+    - name: Assert the legacy cargo path is not used
+      ansible.builtin.stat:
+        path: "{{ rv_verify_home }}/.cargo/bin/rv"
+      register: rv_legacy_bin
+
+    - name: Assert no legacy cargo install
+      ansible.builtin.assert:
+        that:
+          - not rv_legacy_bin.stat.exists
+        fail_msg: "rv was unexpectedly installed into ~/.cargo/bin"
+
+    - name: Read rv version
+      ansible.builtin.command: "{{ rv_verify_home }}/.local/bin/rv --version"
+      register: rv_version_out
+      changed_when: false
+
+    - name: Assert rv reports the pinned release
+      ansible.builtin.assert:
+        that:
+          - "'0.7.2' in rv_version_out.stdout"
+        fail_msg: "Unexpected rv version: {{ rv_version_out.stdout }}"
+
+    - name: Read the shell rc file
+      ansible.builtin.slurp:
+        src: "{{ rv_verify_home }}/.bashrc"
+      register: rv_bashrc
+
+    - name: Assert the managed block wires up ~/.local/bin
+      ansible.builtin.assert:
+        that:
+          - "'ANSIBLE MANAGED BLOCK: rv configuration' in (rv_bashrc.content | b64decode)"
+          - "'$HOME/.local/bin' in (rv_bashrc.content | b64decode)"
+          - "'rv shell init bash' in (rv_bashrc.content | b64decode)"
+        fail_msg: "The rv managed block is missing from .bashrc"
+
+    - name: Assert the installer did not touch rc files itself
+      ansible.builtin.assert:
+        that:
+          - "'rv-installer' not in (rv_bashrc.content | b64decode)"
+          - "'# rv' not in (rv_bashrc.content | b64decode).split('ANSIBLE MANAGED BLOCK')[0]"
+        fail_msg: "The installer modified .bashrc outside the managed block"
+
+    - name: Assert shell integration has one complete managed block
+      ansible.builtin.assert:
+        that:
+          - >-
+            (rv_bashrc.content | b64decode)
+            | regex_findall('(?m)^# BEGIN ANSIBLE MANAGED BLOCK: rv configuration$')
+            | length == 1
+          - >-
+            (rv_bashrc.content | b64decode)
+            | regex_findall('(?m)^# END ANSIBLE MANAGED BLOCK: rv configuration$')
+            | length == 1
+          - "'rv shell completions bash' in (rv_bashrc.content | b64decode)"
+          - >-
+            'export PATH="$HOME/.cargo/bin:$PATH"'
+            not in (rv_bashrc.content | b64decode)
+          - >-
+            'export PATH="$HOME/.rv/bin:$PATH"'
+            not in (rv_bashrc.content | b64decode)
+        fail_msg: "Shell integration is duplicated, incomplete, or uses a legacy PATH"
+
+    - name: Stat the downloaded installer
+      ansible.builtin.stat:
+        path: "{{ rv_verify_home }}/.cache/rv-installer.sh"
+      register: rv_installer_file
+
+    - name: Assert the downloaded installer was cleaned up
+      ansible.builtin.assert:
+        that:
+          - not rv_installer_file.stat.exists
+        fail_msg: "The downloaded rv installer was left behind after installation"
+
+    - name: Read the global Ruby pin
+      ansible.builtin.slurp:
+        src: "{{ rv_verify_home }}/.ruby-version"
+      register: rv_pin
+
+    - name: Assert Ruby is pinned globally
+      ansible.builtin.assert:
+        that:
+          - "(rv_pin.content | b64decode).strip() == '3.4.11'"
+        fail_msg: "Global pin is {{ (rv_pin.content | b64decode).strip() }}, expected 3.4.11"
+
+    - name: List installed Rubies
+      ansible.builtin.command: "{{ rv_verify_home }}/.local/bin/rv ruby list --installed-only --format json"
+      register: rv_rubies
+      changed_when: false
+
+    - name: Assert the pinned Ruby is installed and managed by rv
+      ansible.builtin.assert:
+        that:
+          - >-
+            rv_rubies.stdout | from_json
+            | selectattr('Installed.managed', 'defined')
+            | selectattr('Installed.managed')
+            | map(attribute='Installed.version')
+            | select('eq', 'ruby-3.4.11')
+            | list | length > 0
+        fail_msg: "Ruby 3.4.11 is not installed by rv: {{ rv_rubies.stdout }}"
