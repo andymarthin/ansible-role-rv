@@ -10,6 +10,17 @@ the pushed tag. Keep the `## [x.y.z]` headings in sync with the git tags.
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-10-24
+
+### Fixed
+
+- The `Molecule` CI job failed with `exit code 4` because the `community.docker`
+  collection was never installed; `molecule test` could not load the docker
+  driver. CI now installs `requirements.yml` before running the scenario.
+- The `Lint` job now installs the same collections, so `ansible-lint` and the
+  unit tests resolve modules against the collections Molecule actually uses
+  instead of trusting whatever happens to be preinstalled on the runner.
+
 ## [0.2.0] - 2026-10-23
 
 Update the role for rv 0.7.2. rv 0.2.0 no longer works: rv moved its install
@@ -79,6 +90,7 @@ binary that no longer existed.
 - Initial release: install rv, wire up bash/zsh/fish/nushell integration, and
   install and pin a Ruby version on Ubuntu and macOS.
 
-[Unreleased]: https://github.com/andymarthin/ansible-role-rv/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/andymarthin/ansible-role-rv/compare/v0.2.1...HEAD
+[0.2.1]: https://github.com/andymarthin/ansible-role-rv/compare/v0.1.0...v0.2.1
 [0.2.0]: https://github.com/andymarthin/ansible-role-rv/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/andymarthin/ansible-role-rv/releases/tag/v0.1.0
